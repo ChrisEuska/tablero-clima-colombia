@@ -275,4 +275,17 @@ if codigo_seleccionado:
             <div class="card-title">☀️ Régimen Seco</div>
             <div class="card-value">Mes {mes_seco}</div>
         </div>
+
         """, unsafe_allow_html=True)
+
+# ==========================================
+    # 8. CRÉDITOS Y FUENTES (PIE DE PÁGINA)
+    # ==========================================
+    st.markdown("<br><hr>", unsafe_allow_html=True)
+    st.markdown(f"""
+    <div style="padding: 15px; background-color: #f8f9fa; border-radius: 8px; border-left: 5px solid #2c3e50; font-size: 13px; color: #34495e;">
+        <strong>📍 Fuente de datos originales:</strong> Instituto de Hidrología, Meteorología y Estudios Ambientales (IDEAM) - Estación: {nombre_estacion} [{codigo_seleccionado}].<br>
+        <strong>🧠 Análisis, Modelamiento y Arquitectura Cloud:</strong> Ing. C. Euscátegui (2026).<br>
+        <strong>⚙️ Tecnologías de Procesamiento y Despliegue:</strong> Python, Streamlit, Plotly, Pandas, Apache Parquet & GitHub.
+    </div>
+    """, unsafe_allow_html=True)
