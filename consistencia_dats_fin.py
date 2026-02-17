@@ -38,13 +38,13 @@ st.markdown("""
     """, unsafe_allow_html=True)
 
 # ==========================================
-# 2. CARGA DE BASE DE DATOS YA PROCESADA (EN PARTES PARA LA WEB)
+# 2. CARGA EFICIENTE DE DATOS (ARQUITECTURA CLOUD)
 # ==========================================
 ARCHIVO_CONSISTENCIA = "Consistencia_Homogeneidad_Estaciones.xlsx"
 
-@st.cache_data(show_spinner="Cargando Base de Datos Maestra... (Tomará unos segundos)")
-def cargar_entorno_produccion():
-    # 1. Cargar el catálogo original
+# A. Cargar SÓLO el catálogo globalmente
+@st.cache_data(show_spinner="Cargando Catálogo de Estaciones...")
+def cargar_catalogo():
     archivos_cat = glob.glob("*Catalogo*IDEAM*")
     df_cat = pd.DataFrame()
     if archivos_cat:
@@ -56,52 +56,50 @@ def cargar_entorno_produccion():
         df_cat.columns = df_cat.columns.str.strip().str.upper()
         df_cat['CODIGO'] = df_cat['CODIGO'].astype(str).str.replace('.0', '', regex=False)
 
-    # 2. Cargar las estadísticas de depuración
     df_consistencia = pd.read_excel(ARCHIVO_CONSISTENCIA)
     df_consistencia['CODIGO'] = df_consistencia['CODIGO'].astype(str)
     
-    # Cruzar catálogo con estadísticas
-    df_cat_definitivo = pd.merge(df_cat, df_consistencia, on='CODIGO', how='inner')
+    return pd.merge(df_cat, df_consistencia, on='CODIGO', how='inner')
 
-    # 3. Leer, unir y COMPRIMIR EN RAM (El antídoto contra el colapso)
+# B. Cargar MÁGICAMENTE sólo la estación que el usuario pida (0% riesgo de colapso de RAM)
+@st.cache_data(show_spinner=False)
+def cargar_datos_estacion(codigo):
     archivos_parquet = sorted(glob.glob("Series_Ajustadas_parte_*.parquet"))
     lista_dfs = []
     for archivo in archivos_parquet:
-        df_temp = pd.read_parquet(archivo)
-        # ¡EL TRUCO DE ORO! Convertir a 'category' reduce la memoria en un 90%
-        df_temp['CODIGO'] = df_temp['CODIGO'].astype('category')
-        lista_dfs.append(df_temp)
-        
-    df_datos_limpios = pd.concat(lista_dfs, ignore_index=True)
-
-    return df_cat_definitivo, df_datos_limpios
+        # Aquí está la magia: Extraemos sólo la aguja, ignorando el pajar
+        df_temp = pd.read_parquet(archivo, filters=[('CODIGO', '=', str(codigo))])
+        if not df_temp.empty:
+            lista_dfs.append(df_temp)
+    
+    if lista_dfs:
+        df_final = pd.concat(lista_dfs, ignore_index=True)
+        df_final['Fecha'] = pd.to_datetime(df_final['Fecha'])
+        return df_final
+    return pd.DataFrame()
 
 # ==========================================
-# 3. CONTROL DE FLUJO DE LA APLICACIÓN
+# 3. CONTROL DE FLUJO
 # ==========================================
 st.title("📊 Análisis Estadístico y Estacionalidad")
 
-# Verificar si el archivo de consistencia y al menos una parte del Parquet existen
 partes_parquet = glob.glob("Series_Ajustadas_parte_*.parquet")
-
 if not partes_parquet or not os.path.exists(ARCHIVO_CONSISTENCIA):
-    st.error("⚠️ **No se encontraron las particiones de la Base de Datos Maestra.**")
-    st.info("Asegúrate de que los archivos 'Series_Ajustadas_parte_X.parquet' estén en la misma carpeta junto con el código y los Excels.")
+    st.error("⚠️ **No se encontraron los archivos maestros.**")
     st.stop()
 
-# Si existen, se cargan a memoria (solo ocurre una vez al abrir la app)
 try:
-    df_cat_def, df_datos = cargar_entorno_produccion()
+    df_cat_def = cargar_catalogo()
 except Exception as e:
-    st.error(f"Error leyendo los archivos maestros: {e}")
+    st.error(f"Error leyendo el catálogo: {e}")
     st.stop()
 
 # ==========================================
-# 4. MENÚ LATERAL Y SELECCIÓN (INTERACCIÓN INSTANTÁNEA)
+# 4. MENÚ LATERAL Y SELECCIÓN 
 # ==========================================
 with st.sidebar:
     st.header("🔍 Seleccionar Estación")
-    st.caption("⚡ Modo Producción Web Activado")
+    st.caption("⚡ Arquitectura Cloud Activada")
     deptos = sorted(df_cat_def['DEPARTAMENTO'].astype(str).unique())
     sel_depto = st.selectbox("1. Departamento:", deptos)
     
@@ -118,43 +116,47 @@ with st.sidebar:
     nombre_estacion = info_est['NOMBRE']
 
 # ==========================================
-# 5. ANÁLISIS ESTADÍSTICO DE LOS DATOS
+# 5. EXTRACCIÓN Y ANÁLISIS 
 # ==========================================
-st.subheader(f"📈 Análisis Estadístico de Precipitación ({nombre_estacion})")
-st.markdown("Resultados de la validación matemática, depuración y homogeneidad aplicados a la serie histórica.")
-
-e1, e2, e3, e4, e5 = st.columns(5)
-def build_stat_box(label, value): return f'<div class="stat-box"><div class="stat-label">{label}</div><div class="stat-val">{value}</div></div>'
-
-e1.markdown(build_stat_box("Nivel Consistencia", info_est.get('Consistencia','N/A')), unsafe_allow_html=True)
-e2.markdown(build_stat_box("R² Doble Masa", info_est.get('R2_DobleMasa','N/A')), unsafe_allow_html=True)
-e3.markdown(build_stat_box("Coef. Variación (CV)", info_est.get('CV','N/A')), unsafe_allow_html=True)
-e4.markdown(build_stat_box("Vacíos Originales", f"{info_est.get('Vacios_Originales_1991_2024_%', 0)} %"), unsafe_allow_html=True)
-e5.markdown(build_stat_box("Ajuste Serie", "Aplicado" if info_est.get('Ajuste_DobleMasa')=='Sí' else "No Requerido"), unsafe_allow_html=True)
-
-st.markdown(f"**Método de Relleno Utilizado:** `{info_est.get('Metodo_Llenado', 'Desconocido')}`")
-st.markdown("---")
-
-# ==========================================
-# 6. DESCARGA INDIVIDUAL DE LA ESTACIÓN
-# ==========================================
-st.subheader("📥 Exportar Serie Diaria Ajustada")
-st.markdown("Descarga la tabla de datos de **esta estación específica**. (La columna 'Es_Relleno' marca True si el dato es sintético).")
-
-@st.cache_data(show_spinner=False)
-def generar_excel_individual(codigo):
-    df_1991_2024 = df_datos[df_datos['CODIGO'] == codigo].copy()
-    df_export = df_1991_2024[['Fecha', 'Valor', 'Es_Relleno']].copy()
-    df_export['Fecha'] = df_export['Fecha'].dt.strftime('%Y-%m-%d')
-    df_export['Valor'] = df_export['Valor'].round(2)
-    
-    output = io.BytesIO()
-    with pd.ExcelWriter(output, engine='openpyxl') as writer:
-        df_export.to_excel(writer, index=False, sheet_name='Serie_1991_2024')
-    return output.getvalue()
-
 if codigo_seleccionado:
-    excel_data = generar_excel_individual(codigo_seleccionado)
+    # EXTRAEMOS SÓLO LOS DATOS DE ESTA ESTACIÓN (Súper ligero)
+    df_est_datos = cargar_datos_estacion(codigo_seleccionado)
+
+    if df_est_datos.empty:
+        st.warning("No hay datos de precipitación para esta estación.")
+        st.stop()
+
+    st.subheader(f"📈 Análisis Estadístico de Precipitación ({nombre_estacion})")
+    
+    e1, e2, e3, e4, e5 = st.columns(5)
+    def build_stat_box(label, value): return f'<div class="stat-box"><div class="stat-label">{label}</div><div class="stat-val">{value}</div></div>'
+
+    e1.markdown(build_stat_box("Nivel Consistencia", info_est.get('Consistencia','N/A')), unsafe_allow_html=True)
+    e2.markdown(build_stat_box("R² Doble Masa", info_est.get('R2_DobleMasa','N/A')), unsafe_allow_html=True)
+    e3.markdown(build_stat_box("Coef. Variación (CV)", info_est.get('CV','N/A')), unsafe_allow_html=True)
+    e4.markdown(build_stat_box("Vacíos Originales", f"{info_est.get('Vacios_Originales_1991_2024_%', 0)} %"), unsafe_allow_html=True)
+    e5.markdown(build_stat_box("Ajuste Serie", "Aplicado" if info_est.get('Ajuste_DobleMasa')=='Sí' else "No Requerido"), unsafe_allow_html=True)
+
+    st.markdown(f"**Método de Relleno Utilizado:** `{info_est.get('Metodo_Llenado', 'Desconocido')}`")
+    st.markdown("---")
+
+    # ==========================================
+    # 6. DESCARGA
+    # ==========================================
+    st.subheader("📥 Exportar Serie Diaria Ajustada")
+    
+    @st.cache_data(show_spinner=False)
+    def generar_excel_individual(df_datos_para_exportar):
+        df_export = df_datos_para_exportar[['Fecha', 'Valor', 'Es_Relleno']].copy()
+        df_export['Fecha'] = df_export['Fecha'].dt.strftime('%Y-%m-%d')
+        df_export['Valor'] = df_export['Valor'].round(2)
+        
+        output = io.BytesIO()
+        with pd.ExcelWriter(output, engine='openpyxl') as writer:
+            df_export.to_excel(writer, index=False, sheet_name='Serie_1991_2024')
+        return output.getvalue()
+
+    excel_data = generar_excel_individual(df_est_datos)
     st.download_button(
         label=f"⬇️ Descargar Datos ({nombre_estacion})",
         data=excel_data,
@@ -162,13 +164,11 @@ if codigo_seleccionado:
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     )
 
-st.markdown("---")
+    st.markdown("---")
 
-# ==========================================
-# 7. ESTACIONALIDAD Y EXTREMOS HISTÓRICOS
-# ==========================================
-if codigo_seleccionado:
-    df_est_datos = df_datos[df_datos['CODIGO'] == codigo_seleccionado].copy()
+    # ==========================================
+    # 7. ESTACIONALIDAD Y GRÁFICOS
+    # ==========================================
     df_est_datos['Año'] = df_est_datos['Fecha'].dt.year
     df_est_datos['Mes'] = df_est_datos['Fecha'].dt.month
 
@@ -206,11 +206,10 @@ if codigo_seleccionado:
             st.caption("✔️ Serie con normal climatológica completa.")
         else:
             st.markdown(f"<div class='title-red'>{titulo_texto} ({rango_anios[0]}-{rango_anios[1]})</div>", unsafe_allow_html=True)
-            st.caption("⚠️ **Atención:** Periodo fuera de la normal estándar 1991-2020 o con años faltantes en el rango.")
+            st.caption("⚠️ **Atención:** Periodo fuera de la normal estándar 1991-2020 o con años faltantes.")
 
         fig = go.Figure()
         
-        # Textos redondeados a enteros para la visualización gráfica
         texto_promedio = ["<b>" + str(int(round(val, 0))) + "</b>" for val in climatologia['Promedio']]
         texto_maximo = [str(int(round(val, 0))) for val in climatologia['Maximo']]
         texto_minimo = [str(int(round(val, 0))) for val in climatologia['Minimo']]
@@ -220,14 +219,12 @@ if codigo_seleccionado:
             marker_color='#3498db', text=texto_promedio, textposition='inside', textfont=dict(color='white', size=15)
         ))
         
-        # Máximos en AZUL OSCURO (#1A5276)
         fig.add_trace(go.Scatter(
             name='Máx. Mensual Histórico', x=climatologia['Mes_Nombre'], y=climatologia['Maximo'],
             mode='markers+text', marker=dict(color='#1A5276', symbol='triangle-up', size=10),
             text=texto_maximo, textposition='top center', textfont=dict(color='#1A5276', size=11, family="Arial Black")
         ))
         
-        # Mínimos en ROJO (#c0392b)
         fig.add_trace(go.Scatter(
             name='Mín. Mensual Histórico', x=climatologia['Mes_Nombre'], y=climatologia['Minimo'],
             mode='markers+text', marker=dict(color='#c0392b', symbol='triangle-down', size=10),
@@ -278,5 +275,4 @@ if codigo_seleccionado:
             <div class="card-title">☀️ Régimen Seco</div>
             <div class="card-value">Mes {mes_seco}</div>
         </div>
-
         """, unsafe_allow_html=True)
