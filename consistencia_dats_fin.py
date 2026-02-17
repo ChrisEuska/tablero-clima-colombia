@@ -63,9 +63,15 @@ def cargar_entorno_produccion():
     # Cruzar catálogo con estadísticas
     df_cat_definitivo = pd.merge(df_cat, df_consistencia, on='CODIGO', how='inner')
 
-    # 3. Leer y unir los pedacitos de Parquet
+    # 3. Leer, unir y COMPRIMIR EN RAM (El antídoto contra el colapso)
     archivos_parquet = sorted(glob.glob("Series_Ajustadas_parte_*.parquet"))
-    lista_dfs = [pd.read_parquet(archivo) for archivo in archivos_parquet]
+    lista_dfs = []
+    for archivo in archivos_parquet:
+        df_temp = pd.read_parquet(archivo)
+        # ¡EL TRUCO DE ORO! Convertir a 'category' reduce la memoria en un 90%
+        df_temp['CODIGO'] = df_temp['CODIGO'].astype('category')
+        lista_dfs.append(df_temp)
+        
     df_datos_limpios = pd.concat(lista_dfs, ignore_index=True)
 
     return df_cat_definitivo, df_datos_limpios
@@ -272,4 +278,5 @@ if codigo_seleccionado:
             <div class="card-title">☀️ Régimen Seco</div>
             <div class="card-value">Mes {mes_seco}</div>
         </div>
+
         """, unsafe_allow_html=True)
